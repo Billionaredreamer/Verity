@@ -285,7 +285,15 @@ export function describeGex(g: GexSnapshot): string[] {
       "Net dealer gamma is negative. Under the standard assumption, hedging flows move with price and tend to amplify volatility.",
     );
   } else {
-    out.push("Net dealer gamma is near balance — no clear damping or amplifying regime.");
+    // "Balanced" here means net is small RELATIVE TO GROSS, which is not the
+    // same as a small net number. Saying only "near balance" beside a headline
+    // figure of -$641M reads as a contradiction, so the comparison is stated.
+    const gross = g.positiveGamma + Math.abs(g.negativeGamma);
+    const share = gross > 0 ? Math.abs(g.totalGamma) / gross : 0;
+    out.push(
+      `Net dealer gamma is only ${(share * 100).toFixed(0)}% of gross exposure (${formatGamma(gross)} on both sides combined), ` +
+        "so positioning is close to balanced and no clear damping or amplifying regime applies.",
+    );
   }
 
   if (g.callWall !== null) {

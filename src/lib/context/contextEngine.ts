@@ -73,6 +73,22 @@ export function planRetrieval(question: string, ticker: string | null): Retrieva
 
   if (ticker) {
     plan.snapshot = true;
+    // The handover's §3 example interaction is explicit about what a bare
+    // ticker question should pull: "User: 'What is SPY doing?' → Verity checks
+    // price, volume, flow, gamma, volatility, and major catalysts." So naming
+    // a ticker requests the full picture unless the question is narrower than
+    // that — a keyword-only plan would answer "what are you seeing in SPY?"
+    // with a quote and nothing else, which is not what was asked.
+    const narrow = /\b(price|quote|last|where is .* trading)\b/i.test(question) &&
+      !/\b(flow|gamma|why|risk|position)\b/i.test(question);
+    if (!narrow) {
+      plan.flow = true;
+      plan.gex = true;
+      plan.news = true;
+      plan.events = true;
+      plan.regime = true;
+      plan.indexes = true;
+    }
     // "Why did X drop?" is unanswerable without news and flow, whether or not
     // the user used those words.
     if (/\bwhy\b/i.test(question)) {
