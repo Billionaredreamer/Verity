@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Verity palette.
+ *
+ * Handover §2: "serious, modern, fast, and data-dense without looking like a
+ * crypto casino." So: near-black surfaces with low-chroma separation, one
+ * restrained accent, and directional colors chosen for legibility rather than
+ * excitement.
+ *
+ * Up/down are teal and amber rather than green and red. Red/green is the most
+ * common form of color blindness and this is a screen people stare at for
+ * hours making money decisions — the pair needs to differ in hue AND
+ * lightness, which teal/amber does and red/green does not.
+ */
+:root {
+  --v-base: 9 10 13;
+  --v-surface: 15 17 21;
+  --v-raised: 22 25 31;
+  --v-line: 38 42 51;
+
+  --v-ink: 232 236 243;
+  --v-muted: 148 157 173;
+  --v-faint: 99 107 122;
+
+  --v-up: 45 196 168;
+  --v-down: 240 152 74;
+  --v-accent: 122 162 247;
+  --v-warn: 233 196 106;
+
+  --v-live: 45 196 168;
+  --v-delayed: 233 196 106;
+  --v-mock: 160 132 232;
+  --v-unavailable: 214 112 112;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  border-color: rgb(var(--v-line));
+}
+
+html,
+body {
+  background-color: rgb(var(--v-base));
+  color: rgb(var(--v-ink));
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  /* A terminal shows data, not a scrolling document. */
+  overscroll-behavior: none;
+}
+
+/* Tabular figures everywhere numbers are compared down a column. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Scrollbars that don't shout. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--v-line));
+  border-radius: 5px;
+  border: 2px solid rgb(var(--v-base));
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--v-faint));
+}
+
+/* Focus that is visible without being decorative. */
+:focus-visible {
+  outline: 2px solid rgb(var(--v-accent));
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
