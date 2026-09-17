@@ -32,10 +32,18 @@ review comment.
 3. **The model gets no market endpoints.** It receives a
    `VerityContextPackage` assembled by the context engine and nothing else.
    Do not give it fetch access, and do not let it cite a figure that is not in
-   the package.
-4. **Every market value carries `Provenance`.** State, source, `observedAt`,
-   `retrievedAt`. If you add a value that skips this, you have introduced a
-   number nobody can trace.
+   the package. This is *enforced*, not requested: `checkGrounding` validates
+   every figure and date in a model response against the package and discards
+   the answer if any cannot be traced. Do not weaken that check to accommodate
+   a model that wants to do arithmetic — rule 2 says the arithmetic belongs in
+   an engine, and if a derived figure is worth showing, compute it and put it
+   in the package.
+4. **Every market value carries `Provenance`, and derived values inherit it.**
+   State, source, `observedAt`, `retrievedAt`. A value computed from other
+   values takes the weakest state among its inputs (`mergeProvenance`) — risk
+   derived from mock positions is `MOCK`, however deterministic the
+   arithmetic. Never construct a `Provenance` at render time with a literal
+   state; that is how a screen ends up claiming `LIVE` over mock data.
 5. **Never silently substitute stale or mock data for live.** `MOCK`,
    `DELAYED` and `UNAVAILABLE` are rendered to the user, always. An outage
    shows as an outage.
@@ -62,6 +70,15 @@ review comment.
   every setup to explain why it was surfaced and what would falsify it. The
   engine returns `null` rather than emit a setup that cannot do both.
 - **Confidence is capped below 1.0 everywhere.** Nothing here is certain.
+- **`null` is not zero, and it is not 100%.** An unknown portfolio total must
+  yield a `null` position weight. Passing the position's own size as the
+  denominator — which this codebase did once — produces a confident "100% of
+  portfolio" for every position: a fabricated number wearing the shape of a
+  real one, which is worse than a blank.
+- **Market value is not exposure.** `exposure` on an option is
+  delta-equivalent notional (what it behaves like); market value is what it is
+  worth. Summing exposure into an account total inflated the portfolio
+  threefold once already. `positionEngine` holds both; use the right one.
 
 ## Layout
 
@@ -97,11 +114,37 @@ it works.
   why it was chosen.
 - Run `npm run typecheck` and `npm test` before you consider something done.
 
-## Roadmap position
+## What exists, precisely
 
-Phase 1 (foundation + Terminal/Flow/GEX shells on mock data) is what exists.
-Phases 2–9 — live market data, real flow ingestion, the model layer, voice,
-signals, monitoring, brokerage — are listed in handover §11 and are not built.
+An earlier version of this section said "the model layer, signals … are not
+built", which was wrong in both directions — signals ship, and the model layer
+exists but needs a key. Four states, not two:
+
+**Implemented and running on mock data.** Terminal with context retrieval and
+grounded answers; Flow with every §4 field and filter; GEX including 0DTE;
+Markets; Signals; read-only Portfolio. All six engines
+(`flow`, `gamma`, `risk`, `signal`, `marketRegime`, `position`). The mock
+adapters are real implementations of the provider interfaces, not stubs.
+
+**Implemented, requires configuration.** The language-model reasoner. With
+`ANTHROPIC_API_KEY` set, `ModelReasoner` answers; without it,
+`DeterministicReasoner` does. Model output passes strict shape validation and
+grounding enforcement (`src/lib/ai/grounding.ts`) before a trader sees it —
+any figure not traceable to the context package discards the whole answer and
+the deterministic reasoner answers instead, with the substitution shown in the
+UI. Switching reasoners is a key, not a code change.
+
+**Interface only — the contract exists, no implementation does.** Live market,
+options, news and brokerage adapters. `registry.ts` registers `mock` alone, and
+selecting anything else throws at startup rather than silently serving mocks.
+Writing a real adapter is a new file implementing the interface plus one
+registry line; it is genuinely *not* just flipping an environment variable,
+and the `.env.example` provider list names candidates, not working options.
+
+**Absent.** Auth (`userId` is hardcoded `"local-user"`), persistence (no
+database is wired; the entity list in §9 is a schema sketch), voice (the
+control is rendered disabled), trade monitoring and alerts (types exist in
+`schema/core.ts`, no engine), real-time streaming.
 
 Before starting a phase, check whether the interfaces it needs already exist.
 They usually do, unimplemented on purpose.

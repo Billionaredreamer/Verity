@@ -11,6 +11,7 @@
 
 import { providers } from "@/lib/providers/registry";
 import { assessRisk } from "@/lib/engines/riskEngine";
+import { riskInputFor } from "@/lib/engines/positionEngine";
 import { DataStateBadge } from "@/components/ui/DataStateBadge";
 import {
   Card,
@@ -48,36 +49,11 @@ export default async function PortfolioPage() {
 
   // Risk is assessed against the real portfolio total, so concentration is a
   // measured share rather than a placeholder.
-  const grossExposure = portfolio.positions.reduce((s, x) => s + Math.abs(x.exposure), 0);
-
+  // riskInputFor is shared with the context engine, so the Terminal and this
+  // screen report identical risk for the same position by construction rather
+  // than by two call sites happening to agree.
   const risks = new Map(
-    portfolio.positions.map((pos) => {
-      // positionSize is MARKET VALUE (what the position is worth), because
-      // riskEngine derives the contract count from it via the premium.
-      // Concentration is passed separately and uses EXPOSURE, because what
-      // matters for concentration is how much the position moves the account.
-      const positionMarketValue =
-        pos.kind === "option"
-          ? Math.abs(pos.markPrice * pos.quantity * 100)
-          : Math.abs(pos.markPrice * pos.quantity);
-      return [
-        pos.id,
-        assessRisk({
-          positionSize: positionMarketValue,
-          portfolioSize: portfolio.totalValue,
-          entry: pos.entryPrice,
-          stop: null,
-          optionPremium: pos.kind === "option" ? pos.entryPrice : null,
-          delta: pos.delta,
-          gamma: pos.gamma,
-          theta: pos.theta,
-          vega: pos.vega,
-          daysToExpiration: pos.expiration ? daysToExpiration(pos.expiration) : null,
-          volatility: null,
-          concentration: grossExposure > 0 ? Math.abs(pos.exposure) / grossExposure : null,
-        }),
-      ];
-    }),
+    portfolio.positions.map((pos) => [pos.id, assessRisk(riskInputFor(pos, portfolio, null))]),
   );
 
   const allWarnings = [...risks.values()].flatMap((r) => r.warnings);

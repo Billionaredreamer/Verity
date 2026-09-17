@@ -8,14 +8,12 @@ not place trades.
 
 ## Status
 
-**Phase 1 of the handover roadmap (§11).** The foundation, Terminal, Flow and
-GEX screens are built and run on a labeled mock data layer behind real provider
-interfaces. No live market data is wired yet — that is phase 2, and it is a
-configuration change rather than a rewrite.
+**Phase 1 of the handover roadmap (§11), audited and remediated.** Everything
+runs on a labeled mock data layer behind real provider interfaces.
 
-What works today:
+### Implemented, running on mock data
 
-| Screen | State |
+| Screen | What it does |
 |---|---|
 | Terminal | Context retrieval, grounded answers split into facts / analysis / uncertainty, context cards, inspectable retrieval trace |
 | Flow | All §4 event fields and all §4 filters, per-print interpretation that can return "unclear" |
@@ -24,8 +22,30 @@ What works today:
 | Signals | Factor-scored setups with evidence, risks and invalidation conditions |
 | Portfolio | Read-only positions, P/L, exposure, concentration, upcoming expirations |
 
-Not built, by design: live provider connections, voice, trade monitoring,
-brokerage OAuth, auth. The interfaces exist; the implementations do not.
+### Implemented, needs configuration
+
+The language-model reasoner. Set `ANTHROPIC_API_KEY` and `ModelReasoner`
+answers; leave it unset and `DeterministicReasoner` does. Model output is
+validated for shape and **grounding** before anyone sees it — every figure and
+date must trace to the context package, or the whole answer is discarded and
+the deterministic one is shown with the substitution stated in the UI.
+
+### Interface only — no implementation
+
+Live market, options, news and brokerage adapters. The interfaces are complete
+and `registry.ts` is the single switch point, but only `mock` is registered;
+selecting anything else throws at startup rather than quietly serving fixtures.
+
+**This is not merely an environment-variable change.** The provider names in
+`.env.example` are candidates from handover §9, not working options — each
+needs an adapter written against the interface. What the architecture buys you
+is that writing one touches a new file and one registry line, and nothing else.
+
+### Absent
+
+Auth (`userId` is hardcoded), persistence (no database wired; the §9 entity
+list is a schema sketch), voice (control rendered disabled), trade monitoring
+and alerts (types exist, no engine), real-time streaming.
 
 ## Running it
 
@@ -64,7 +84,7 @@ bug even when it works.
 - `src/lib/ai/` — the reasoning layer. Reads the package; has no market
   endpoints of its own.
 
-## Three decisions worth knowing about
+## Four decisions worth knowing about
 
 **Flow is not directional by contract type.** A large call print is not
 bullish. A call *bought on the ask* is bullish for the buyer; a call *sold on
@@ -79,7 +99,20 @@ surface that shows gamma can say so, and they do.
 
 **Mock data is labeled everywhere, including when it is good news.** The data
 state badge renders `LIVE` as visibly as `MOCK`. A badge that disappears when
-data is fine is a badge nobody can trust.
+data is fine is a badge nobody can trust. Derived values inherit the weakest
+state among their inputs, so a deterministic risk calculation over mock
+positions is labeled `MOCK` — determinism makes arithmetic trustworthy, it
+does not upgrade the data underneath.
+
+**Model grounding is enforced, not requested.** Telling a model in its prompt
+to use only the supplied data is a request. `checkGrounding` is the
+enforcement: every number and date in a model response is matched against
+values actually present in the context package, and one that is not discards
+the entire answer. The model is also forbidden from computing derived figures,
+which sounds strict until you notice it is just the existing rule — the
+calculations live in engines — applied consistently. If a derived figure is
+worth showing, an engine computes it and it enters the package, where it is
+testable and consistent across screens.
 
 ## Working on this
 

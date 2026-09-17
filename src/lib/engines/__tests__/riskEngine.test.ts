@@ -105,8 +105,40 @@ describe("assessRisk — volatility", () => {
 
   it("handles a zero portfolio without dividing by zero", () => {
     const r = assessRisk(input({ portfolioSize: 0 }));
-    expect(r.positionWeight).toBe(0);
+    // null, not 0: zero would read as "no exposure", which is a claim.
+    expect(r.positionWeight).toBeNull();
     expect(Number.isFinite(r.dollarRisk ?? 0)).toBe(true);
+  });
+});
+
+describe("assessRisk — unknown portfolio total", () => {
+  it("returns null position weight rather than 100%", () => {
+    // The regression this pins: passing the position's own size as the
+    // portfolio size made every position weigh exactly 100%.
+    const r = assessRisk(input({ portfolioSize: null, positionSize: 10_000 }));
+    expect(r.positionWeight).toBeNull();
+    expect(r.riskPercent).toBeNull();
+  });
+
+  it("does not claim a concentration flag it could not measure", () => {
+    const r = assessRisk(input({ portfolioSize: null, concentration: null }));
+    expect(r.concentrationFlag).toBe("ok");
+    expect(r.warnings.some((w) => w.includes("Portfolio total is unavailable"))).toBe(true);
+  });
+
+  it("still reports position-local figures that do not need the portfolio", () => {
+    const r = assessRisk(
+      input({ portfolioSize: null, optionPremium: 5, theta: -0.1, delta: 0.5 }),
+    );
+    expect(r.dollarsPerPercentMove).not.toBeNull();
+    expect(r.dailyThetaCost).not.toBeNull();
+    // Dollar risk needs only the stop, not the portfolio.
+    expect(r.dollarRisk).not.toBeNull();
+  });
+
+  it("uses an explicit concentration even when portfolio size is unknown", () => {
+    const r = assessRisk(input({ portfolioSize: null, concentration: 0.3 }));
+    expect(r.concentrationFlag).toBe("high");
   });
 });
 

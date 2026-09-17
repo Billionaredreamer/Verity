@@ -24,8 +24,11 @@ const TRADING_DAYS = 252;
 export function assessRisk(input: RiskInput): RiskAssessment {
   const warnings: string[] = [];
 
-  const positionWeight =
-    input.portfolioSize > 0 ? input.positionSize / input.portfolioSize : 0;
+  // null portfolio ⇒ null weight. Returning 0 would read as "no exposure" and
+  // deriving it from the position's own size would read as 100%; both are
+  // confident answers to a question the data cannot answer.
+  const hasPortfolio = input.portfolioSize !== null && input.portfolioSize > 0;
+  const positionWeight = hasPortfolio ? input.positionSize / input.portfolioSize! : null;
 
   // --- Stop-based risk ------------------------------------------------------
   let dollarRisk: number | null = null;
@@ -53,7 +56,7 @@ export function assessRisk(input: RiskInput): RiskAssessment {
       const shares = input.entry > 0 ? input.positionSize / input.entry : 0;
       dollarRisk = moveToStop * shares;
     }
-    riskPercent = input.portfolioSize > 0 ? dollarRisk / input.portfolioSize : null;
+    riskPercent = hasPortfolio ? dollarRisk / input.portfolioSize! : null;
   } else {
     warnings.push("No stop defined — downside is not bounded by a predetermined exit.");
   }
@@ -83,19 +86,29 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   }
 
   // --- Flags ----------------------------------------------------------------
+  // Concentration prefers the caller's explicit figure (share of gross
+  // exposure) and falls back to position weight. With neither, it stays
+  // unknown: "ok" is reported only when something was actually measured.
   const concentration = input.concentration ?? positionWeight;
   let concentrationFlag: RiskAssessment["concentrationFlag"] = "ok";
-  if (concentration >= CONCENTRATION_HIGH) concentrationFlag = "high";
-  else if (concentration >= CONCENTRATION_ELEVATED) concentrationFlag = "elevated";
 
-  if (concentrationFlag === "high") {
+  if (concentration === null) {
     warnings.push(
-      `This position is ${(concentration * 100).toFixed(1)}% of the portfolio — a single-name move dominates the account.`,
+      "Portfolio total is unavailable, so concentration and portfolio-relative risk could not be assessed.",
     );
-  } else if (concentrationFlag === "elevated") {
-    warnings.push(
-      `This position is ${(concentration * 100).toFixed(1)}% of the portfolio.`,
-    );
+  } else {
+    if (concentration >= CONCENTRATION_HIGH) concentrationFlag = "high";
+    else if (concentration >= CONCENTRATION_ELEVATED) concentrationFlag = "elevated";
+
+    if (concentrationFlag === "high") {
+      warnings.push(
+        `This position is ${(concentration * 100).toFixed(1)}% of the portfolio — a single-name move dominates the account.`,
+      );
+    } else if (concentrationFlag === "elevated") {
+      warnings.push(
+        `This position is ${(concentration * 100).toFixed(1)}% of the portfolio.`,
+      );
+    }
   }
 
   if (riskPercent !== null && riskPercent > RISK_PERCENT_FLAG) {
@@ -151,13 +164,15 @@ export function assessRisk(input: RiskInput): RiskAssessment {
  * infinite size and must never be silently rendered as a number.
  */
 export function positionSizeForRisk(args: {
-  portfolioSize: number;
+  portfolioSize: number | null;
   riskPercent: number;
   entry: number;
   stop: number;
 }): number | null {
   const perShareRisk = Math.abs(args.entry - args.stop);
-  if (perShareRisk <= 0 || args.entry <= 0 || args.portfolioSize <= 0) return null;
+  if (perShareRisk <= 0 || args.entry <= 0 || args.portfolioSize === null || args.portfolioSize <= 0) {
+    return null;
+  }
   const dollarRisk = args.portfolioSize * args.riskPercent;
   const shares = dollarRisk / perShareRisk;
   return Math.round(shares * args.entry * 100) / 100;

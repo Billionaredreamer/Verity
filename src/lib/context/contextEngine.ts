@@ -22,17 +22,14 @@
 
 import "server-only";
 
-import type {
-  ContextCard,
-  FlowEvent,
-  Position,
-  VerityContextPackage,
-} from "@/lib/schema/core";
+import type { ContextCard, FlowEvent, VerityContextPackage } from "@/lib/schema/core";
 import { providers } from "@/lib/providers/registry";
 import { computeGex, formatGamma } from "@/lib/engines/gammaEngine";
 import { aggregateFlow, formatPremium } from "@/lib/engines/flowEngine";
 import { assessRegime } from "@/lib/engines/marketRegimeEngine";
 import { assessRisk } from "@/lib/engines/riskEngine";
+import { riskInputFor } from "@/lib/engines/positionEngine";
+import { mergeProvenance, sourced } from "@/lib/providers/provenance";
 import { EMPTY_FLOW_FILTERS } from "@/lib/schema/core";
 import { upcomingExpirations } from "@/lib/util/dates";
 
@@ -49,16 +46,25 @@ export interface RetrievalPlan {
   risk: boolean;
 }
 
+/**
+ * Keyword patterns that decide what a question needs.
+ *
+ * Note the trailing-`\b` trap: `/\brisk\b/` does NOT match "risks", because
+ * `s` is a word character. The handover's own §3 example query is "What risks
+ * am I missing?", so that omission silently skipped risk retrieval on the
+ * exact phrasing the spec calls representative. Patterns here end with an
+ * explicit plural or a prefix match rather than a word boundary.
+ */
 const KEYWORDS: Record<keyof RetrievalPlan, RegExp> = {
-  snapshot: /\b(price|doing|quote|trading|move|moved|drop|dropp|fell|rall|spik|up|down|seeing)\b/i,
+  snapshot: /\b(price|doing|quote|trading|move[ds]?|drop|dropp|fell|rall|spik|up|down|seeing)\b/i,
   indexes: /\b(market|spy|qqq|iwm|dia|index|indices|tape|broad)\b/i,
-  flow: /\b(flow|options?|calls?|puts?|premium|sweep|block|unusual|positioning)\b/i,
-  gex: /\b(gamma|gex|wall|zero.?gamma|flip|dealer|0dte|level|support|resistance)\b/i,
-  news: /\b(news|headline|catalyst|why|announce|report|happen)\b/i,
-  events: /\b(earnings|cpi|ppi|fomc|fed|jobs|gdp|event|calendar|catalyst)\b/i,
+  flow: /\b(flow|option|options|call|calls|put|puts|premium|sweep|block|unusual|positioning)\b/i,
+  gex: /\b(gamma|gex|wall|walls|zero.?gamma|flip|dealer|0dte|level|levels|support|resistance)\b/i,
+  news: /\b(news|headline|headlines|catalyst|catalysts|why|announce|report|happen)\b/i,
+  events: /\b(earnings|cpi|ppi|fomc|fed|jobs|gdp|event|events|calendar|catalyst|catalysts)\b/i,
   regime: /\b(regime|risk.?on|risk.?off|environment|volatil|vix|breadth)\b/i,
-  position: /\b(my|position|i own|i'm in|entered|entry|p\/?l|profit|loss|holding)\b/i,
-  risk: /\b(risk|exposure|size|stop|concentrat|what am i missing|danger)\b/i,
+  position: /\b(my|position|positions|i own|i'm in|entered|entry|p\/?l|profit|loss|holding|holdings)\b/i,
+  risk: /\b(risk|risks|risky|exposure|size|stop|concentrat|missing|danger)\b/i,
 };
 
 /**
@@ -165,6 +171,7 @@ export async function assembleContext(args: AssembleArgs): Promise<VerityContext
     news: null,
     events: null,
     regime: null,
+    portfolio: null,
     position: null,
     risk: null,
     assembledAt: new Date().toISOString(),
@@ -239,14 +246,13 @@ export async function assembleContext(args: AssembleArgs): Promise<VerityContext
         ),
       (v) => (pkg.events = v),
     ),
+    // The whole summary is retrieved, not just the matched position: risk
+    // needs the portfolio total, and derived values need this provenance.
     retrieve(
-      "position",
-      plan.position,
-      async () => {
-        const portfolio = await p.brokerage.getPortfolio(args.userId);
-        return portfolio.data.positions.find((x) => !ticker || x.ticker === ticker) ?? null;
-      },
-      (v) => (pkg.position = v),
+      "portfolio",
+      plan.position || plan.risk,
+      () => p.brokerage.getPortfolio(args.userId),
+      (v) => (pkg.portfolio = v),
     ),
   ]);
 
@@ -276,42 +282,29 @@ export async function assembleContext(args: AssembleArgs): Promise<VerityContext
     }
   }
 
-  // Risk depends on the position and the snapshot.
-  if (plan.risk && pkg.position) {
-    pkg.risk = riskForPosition(pkg.position, pkg.snapshot?.data.iv ?? null);
-    log.push({ key: "risk", state: "LIVE", ms: 0 });
+  // Select the position the question is about, from the retrieved summary.
+  if (pkg.portfolio) {
+    pkg.position =
+      pkg.portfolio.data.positions.find((x) => !ticker || x.ticker === ticker) ?? null;
+  }
+
+  // Risk is derived from the position, the portfolio total and the snapshot's
+  // IV. Its provenance is the weakest of those inputs — a deterministic
+  // calculation over mock data is mock, not live.
+  if (plan.risk && pkg.position && pkg.portfolio) {
+    const inputProvenances = [pkg.portfolio.provenance];
+    if (pkg.snapshot) inputProvenances.push(pkg.snapshot.provenance);
+
+    pkg.risk = sourced(
+      assessRisk(
+        riskInputFor(pkg.position, pkg.portfolio.data, pkg.snapshot?.data.iv ?? null),
+      ),
+      mergeProvenance(inputProvenances, "riskEngine"),
+    );
+    log.push({ key: "risk", state: pkg.risk.provenance.state, ms: 0 });
   }
 
   return pkg;
-}
-
-/** riskEngine input assembled from a position. Kept here so callers don't duplicate it. */
-export function riskForPosition(position: Position, iv: number | null) {
-  const positionSize = Math.abs(position.exposure);
-  return assessRisk({
-    positionSize,
-    // A real implementation reads portfolio size from the brokerage summary.
-    // Using a placeholder would produce a fabricated concentration figure, so
-    // this is passed through by the caller that has the real total.
-    portfolioSize: positionSize,
-    entry: position.entryPrice,
-    stop: null,
-    optionPremium: position.kind === "option" ? position.entryPrice : null,
-    delta: position.delta,
-    gamma: position.gamma,
-    theta: position.theta,
-    vega: position.vega,
-    daysToExpiration: position.expiration
-      ? Math.max(
-          0,
-          Math.round(
-            (new Date(`${position.expiration}T20:00:00Z`).getTime() - Date.now()) / 86_400_000,
-          ),
-        )
-      : null,
-    volatility: iv,
-    concentration: null,
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -400,7 +393,13 @@ export function buildContextCards(pkg: VerityContextPackage): ContextCard[] {
     });
   }
 
-  if (pkg.position) {
+  // Position and risk cards inherit the provenance of what produced them.
+  // They previously hardcoded MOCK and LIVE respectively, which was wrong in
+  // both directions: the position card would keep saying MOCK after a real
+  // brokerage was connected, and the risk card claimed LIVE while computing
+  // over mock positions. Determinism makes arithmetic trustworthy; it does
+  // not upgrade the data underneath it.
+  if (pkg.position && pkg.portfolio) {
     const pos = pkg.position;
     cards.push({
       kind: "position",
@@ -408,33 +407,22 @@ export function buildContextCards(pkg: VerityContextPackage): ContextCard[] {
       value: `${pos.quantity > 0 ? "+" : ""}${pos.quantity} ${pos.kind === "option" ? `${pos.strike} ${pos.side}` : "shares"}`,
       detail: `${pos.unrealizedPnl >= 0 ? "+" : ""}$${Math.abs(pos.unrealizedPnl).toFixed(0)} (${pos.unrealizedPnlPercent >= 0 ? "+" : ""}${pos.unrealizedPnlPercent.toFixed(1)}%)`,
       tone: pos.unrealizedPnl >= 0 ? "up" : "down",
-      provenance: {
-        state: "MOCK",
-        source: "brokerage",
-        observedAt: new Date().toISOString(),
-        retrievedAt: new Date().toISOString(),
-        delaySeconds: null,
-      },
+      provenance: pkg.portfolio.provenance,
     });
   }
 
   if (pkg.risk) {
+    const r = pkg.risk.data;
     cards.push({
       kind: "risk",
       title: "Risk",
       value:
-        pkg.risk.dollarsPerPercentMove !== null
-          ? `$${Math.abs(pkg.risk.dollarsPerPercentMove).toFixed(0)}/1%`
+        r.dollarsPerPercentMove !== null
+          ? `$${Math.abs(r.dollarsPerPercentMove).toFixed(0)}/1%`
           : "—",
-      detail: pkg.risk.warnings[0] ?? "No flags raised.",
-      tone: pkg.risk.concentrationFlag === "high" ? "warn" : "neutral",
-      provenance: {
-        state: "LIVE",
-        source: "riskEngine",
-        observedAt: new Date().toISOString(),
-        retrievedAt: new Date().toISOString(),
-        delaySeconds: null,
-      },
+      detail: r.warnings[0] ?? "No flags raised.",
+      tone: r.concentrationFlag === "high" ? "warn" : "neutral",
+      provenance: pkg.risk.provenance,
     });
   }
 

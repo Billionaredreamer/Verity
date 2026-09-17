@@ -24,6 +24,7 @@ import { aggregateFlow, formatPremium } from "@/lib/engines/flowEngine";
 import { describeGex, formatGamma, GEX_ASSUMPTION } from "@/lib/engines/gammaEngine";
 import { REGIME_LABELS } from "@/lib/engines/marketRegimeEngine";
 import { sessionState } from "@/lib/util/dates";
+import { checkGrounding, validateShape } from "./grounding";
 
 export interface ReasonedAnswer {
   text: string;
@@ -59,6 +60,11 @@ Rules:
 - Do not tell the trader what to do. Describe conditions and risks; the decision is theirs.
 - Be concise. The trader is reading this mid-session.
 - Gamma exposure figures rest on an assumption about dealer positioning that is modeled, not measured. Say so when you cite them.
+
+NUMBERS — this is checked automatically and a violation discards your whole answer:
+- Quote figures verbatim from the package. Do not round them further and do not reformat them.
+- Do NOT calculate. No differences, percentages, ratios, sums or averages of your own, even from values that are in the package. If a derived figure is not already in the package, describe the relationship in words instead: say "price is above VWAP", not "price is 2.4% above VWAP".
+- Every number and date you write must appear in the package. Any that does not causes your response to be rejected and replaced.
 
 Respond in JSON: {"text": string, "facts": string[], "analysis": string[], "uncertainty": string[]}`;
 
@@ -178,7 +184,11 @@ export class DeterministicReasoner implements Reasoner {
     }
 
     if (pkg.risk) {
-      for (const w of pkg.risk.warnings.slice(0, 3)) analysis.push(w);
+      for (const w of pkg.risk.data.warnings.slice(0, 3)) analysis.push(w);
+      const weight = pkg.risk.data.positionWeight;
+      if (weight !== null) {
+        facts.push(`The position is ${(weight * 100).toFixed(1)}% of the portfolio by value.`);
+      }
     }
 
     // Report what could not be retrieved, so a gap is visible rather than silent.
@@ -261,11 +271,31 @@ export class ModelReasoner implements Reasoner {
       const parsed = extractJson(raw);
       if (!parsed) throw new Error("model response was not parseable JSON");
 
+      // Strict shape validation. Nothing is coerced: a missing field is a
+      // rejected response, not an empty array quietly shipped to a trader.
+      const shape = validateShape(parsed);
+      if ("error" in shape) throw new ValidationError(`malformed response — ${shape.error}`);
+
+      // Grounding is enforced, not requested. Any figure or date the model
+      // wrote that is not in the package discards the whole answer.
+      const grounding = checkGrounding(shape, pkg);
+      if (!grounding.ok) {
+        // The specific bad values go to the server log, never to the user.
+        // Quoting "figure 712.45 is not in the package" back onto a trading
+        // screen still puts an invented price in front of a trader, which is
+        // the exact thing this check exists to prevent.
+        console.warn("[reasoner] rejected ungrounded response", grounding.violations);
+        const count = grounding.violations.length;
+        throw new ValidationError(
+          `${count} figure${count === 1 ? "" : "s"} in the response could not be traced to the retrieved data`,
+        );
+      }
+
       return {
-        text: String(parsed.text ?? ""),
-        facts: toStringArray(parsed.facts),
-        analysis: toStringArray(parsed.analysis),
-        uncertainty: toStringArray(parsed.uncertainty),
+        text: shape.text,
+        facts: shape.facts,
+        analysis: shape.analysis,
+        uncertainty: shape.uncertainty,
         engine: "model",
         engineLabel: this.label,
       };
@@ -273,12 +303,37 @@ export class ModelReasoner implements Reasoner {
       // §10: handle failures explicitly. Falling back to deterministic output
       // is safe because that output is grounded by construction — and the UI
       // shows which engine answered, so the degradation is visible.
-      const fallbackAnswer = await this.fallback.answer(pkg);
-      fallbackAnswer.uncertainty.unshift(
-        `The language model was unavailable (${err instanceof Error ? err.message : "unknown error"}); this answer was composed directly from the retrieved data.`,
-      );
-      return fallbackAnswer;
+      return this.degrade(pkg, err);
     }
+  }
+
+  /**
+   * Fall back with a visible reason.
+   *
+   * A validation failure is reported as a rejection rather than an outage,
+   * because the two mean different things to whoever is debugging: one says
+   * the model is unreachable, the other says it said something it should not
+   * have. Neither message includes the raw response or any provider detail.
+   */
+  private async degrade(pkg: VerityContextPackage, err: unknown): Promise<ReasonedAnswer> {
+    const answer = await this.fallback.answer(pkg);
+    const reason =
+      err instanceof ValidationError
+        ? `Verity rejected the language model's answer (${err.message}) and composed this one directly from the retrieved data instead.`
+        : `The language model was unavailable (${err instanceof Error ? err.message : "unknown error"}); this answer was composed directly from the retrieved data.`;
+    answer.uncertainty.unshift(reason);
+    answer.engineLabel = err instanceof ValidationError
+      ? "Deterministic (model answer rejected)"
+      : "Deterministic (model unavailable)";
+    return answer;
+  }
+}
+
+/** Distinguishes "the model said something wrong" from "the model was unreachable". */
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ValidationError";
   }
 }
 
@@ -294,9 +349,6 @@ function extractJson(raw: string): Record<string, unknown> | null {
   }
 }
 
-function toStringArray(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-}
 
 let cachedReasoner: Reasoner | null = null;
 

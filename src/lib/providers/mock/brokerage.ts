@@ -15,6 +15,7 @@ import { lookupOrSynthesize } from "./universe";
 import { mockSpot } from "./marketData";
 import { hashSeed, rng, timeBucket, between } from "./random";
 import { daysToExpiration, upcomingExpirations } from "@/lib/util/dates";
+import { signedMarketValue } from "@/lib/engines/positionEngine";
 import { delta as bsDelta, gamma as bsGamma, theta as bsTheta, vega as bsVega, price as bsPrice, yearsToExpiration } from "@/lib/math/blackScholes";
 
 const SOURCE = "mock";
@@ -115,30 +116,15 @@ const CORRELATION_GROUPS: ReadonlyArray<{ label: string; tickers: string[] }> = 
   { label: "Broad index exposure", tickers: ["SPY", "QQQ", "IWM", "DIA"] },
 ];
 
-/**
- * Market value of a position — what it is worth in the account.
- *
- * This is deliberately NOT `exposure`. Exposure for an option is
- * delta-equivalent notional (what the position behaves like), which is the
- * right number for concentration but wildly wrong for account value: twelve
- * NVDA calls worth $3,456 of premium carry ~$83,000 of notional. Summing
- * exposure into `totalValue` would inflate the account by an order of
- * magnitude and skew every percentage derived from it.
- *
- * A short option has negative market value, because it is a liability.
- */
-function marketValue(p: Position): number {
-  return p.kind === "option"
-    ? p.markPrice * p.quantity * CONTRACT_MULTIPLIER
-    : p.markPrice * p.quantity;
-}
-
 export function summarize(positions: Position[], cash: number): PortfolioSummary {
   // Concentration uses exposure, because what matters for concentration is how
   // much the position moves the account, not what it cost.
   const grossExposure = positions.reduce((s, p) => s + Math.abs(p.exposure), 0);
   const unrealizedPnl = round2(positions.reduce((s, p) => s + p.unrealizedPnl, 0));
-  const totalValue = round2(cash + positions.reduce((s, p) => s + marketValue(p), 0));
+  // signedMarketValue, not exposure: a short option is a liability, and
+  // exposure is delta-equivalent notional rather than what the position is
+  // worth. Summing exposure here inflated the account roughly threefold.
+  const totalValue = round2(cash + positions.reduce((s, p) => s + signedMarketValue(p), 0));
 
   const byTicker = new Map<string, number>();
   for (const p of positions) {

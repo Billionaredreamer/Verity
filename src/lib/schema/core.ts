@@ -411,8 +411,18 @@ export interface PortfolioSummary {
  * logic. The AI can explain the result, but should not invent the numbers."
  */
 export interface RiskInput {
+  /**
+   * The position's MARKET VALUE — what it is worth — not its exposure.
+   * riskEngine derives the contract count from this via the premium, so
+   * passing delta-equivalent notional here silently multiplies every
+   * downstream figure. Use positionEngine.marketValue to compute it.
+   */
   positionSize: number;
-  portfolioSize: number;
+  /**
+   * Total portfolio value, or `null` when no brokerage total is available.
+   * Portfolio-relative outputs are suppressed rather than guessed when null.
+   */
+  portfolioSize: number | null;
   entry: number;
   stop: number | null;
   optionPremium: number | null;
@@ -431,8 +441,15 @@ export interface RiskAssessment {
   /** Share of the portfolio at stake if the stop is hit, 0–1. */
   riskPercent: number | null;
   dollarRisk: number | null;
-  /** Position size as a share of the portfolio, 0–1. */
-  positionWeight: number;
+  /**
+   * Position size as a share of the portfolio, 0–1.
+   *
+   * `null` when the portfolio total is unknown. It must never be derived by
+   * passing the position's own size as the portfolio size — that yields a
+   * confident 100% for every position, which is a fabricated number wearing
+   * the shape of a real one.
+   */
+  positionWeight: number | null;
   /** Dollar P/L per 1% move in the underlying, from delta. */
   dollarsPerPercentMove: number | null;
   /** Premium decay per day, from theta. */
@@ -555,8 +572,16 @@ export interface VerityContextPackage {
   news: Sourced<NewsItem[]> | null;
   events: Sourced<EconomicEvent[]> | null;
   regime: Sourced<MarketRegimeAssessment> | null;
+  /**
+   * The whole brokerage summary, not just the matched position. Risk needs the
+   * portfolio total to compute a position weight, and the summary carries the
+   * provenance that derived values must inherit — a risk figure computed from
+   * mock positions is mock, however deterministic the arithmetic.
+   */
+  portfolio: Sourced<PortfolioSummary> | null;
+  /** The position the question is about, selected from `portfolio`. */
   position: Position | null;
-  risk: RiskAssessment | null;
+  risk: Sourced<RiskAssessment> | null;
   assembledAt: string;
   /** Which retrievals were attempted and what happened. §10 debuggability. */
   retrievalLog: Array<{ key: string; state: DataState; ms: number; note?: string }>;
